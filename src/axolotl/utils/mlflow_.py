@@ -16,3 +16,9 @@ def setup_mlflow_env_vars(cfg: DictDefault):
     # Enable mlflow if experiment name is present
     if cfg.mlflow_experiment_name and len(cfg.mlflow_experiment_name) > 0:
         cfg.use_mlflow = True
+    # Enable mlflow if tracking uri is present
+    if cfg.mlflow_tracking_uri and len(cfg.mlflow_tracking_uri) > 0:
+        cfg.use_mlflow = True
+        os.environ.pop("MLFLOW_TRACKING_DISABLED", None)  # Remove if present
+    else:
+        os.environ["MLFLOW_TRACKING_DISABLED"] = "true"

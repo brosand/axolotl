@@ -447,6 +447,8 @@ def validate_config(cfg):
         LOG.warning(
             "wandb_run_id sets the ID of the run. If you would like to set the name, please use wandb_name instead."
         )
+    if cfg.mlflow_run_id and not cfg.mlflow_name:
+        cfg.mlflow_name = cfg.mlflow_run_id
 
     if cfg.noisy_embedding_alpha is not None:
         # Deprecated, use neftune_noise_alpha

@@ -2,7 +2,6 @@
 
 import importlib
 import logging
-import math
 import os
 import random
 import sys
@@ -17,7 +16,6 @@ import yaml
 # add src to the pythonpath so we don't need to pip install this
 from accelerate.commands.config import config_args
 from art import text2art
-from datasets import concatenate_datasets, load_dataset
 from huggingface_hub import HfApi
 from huggingface_hub.utils import LocalTokenNotFoundError
 from transformers import GenerationConfig, TextIteratorStreamer, TextStreamer
@@ -78,7 +76,7 @@ def do_merge_lora(
     safe_serialization = cfg.save_safetensors is True
 
     LOG.info("running merge of LoRA with base model")
-    model = model.merge_and_unload(progressbar=True)
+    model = model.merge_and_unload()
     model.to(dtype=cfg.torch_dtype)
 
     if cfg.local_rank == 0:
@@ -86,7 +84,6 @@ def do_merge_lora(
         model.save_pretrained(
             str(Path(cfg.output_dir) / "merged"),
             safe_serialization=safe_serialization,
-            progressbar=True,
         )
         tokenizer.save_pretrained(str(Path(cfg.output_dir) / "merged"))
 
@@ -298,7 +295,6 @@ def load_cfg(config: Path = Path("examples/"), **kwargs):
     setup_wandb_env_vars(cfg)
 
     setup_mlflow_env_vars(cfg)
-
     return cfg
 
 
@@ -330,94 +326,6 @@ def load_datasets(
         LOG.info("printing prompters...")
         for prompter in prompters:
             LOG.info(prompter)
-
-    return TrainDatasetMeta(
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        total_num_steps=total_num_steps,
-    )
-
-
-def load_rl_datasets(
-    *,
-    cfg: DictDefault,
-    cli_args: TrainerCliArgs,  # pylint: disable=unused-argument
-) -> TrainDatasetMeta:
-    train_datasets: List[Any] = []
-    for i, ds_cfg in enumerate(cfg.datasets):
-        train_datasets.insert(i, load_dataset(ds_cfg["path"], split=ds_cfg["split"]))
-    # eval_dataset = load_dataset(
-    #     cfg.test_datasets[0]["path"], split=cfg.test_datasets[0]["split"]
-    # )
-    eval_dataset = None
-
-    def argilla_apply_chatml(sample):  # pylint: disable=possibly-unused-variable
-        if "system" in sample and sample["system"]:
-            sample["prompt"] = (
-                f"<|im_start|>system\n{sample['system']}<|im_end|>\n"
-                f"<|im_start|>user\n{sample['instruction']}<|im_end|>\n<|im_start|>assistant\n"
-            )
-        else:
-            sample[
-                "prompt"
-            ] = f"<|im_start|>user\n{sample['instruction']}<|im_end|>\n<|im_start|>assistant\n"
-        sample["chosen"] = f"{sample['chosen_response']}<|im_end|>"
-        sample["rejected"] = f"{sample['rejected_response']}<|im_end|>"
-        return sample
-
-    def intel_apply_chatml(sample):  # pylint: disable=possibly-unused-variable
-        if "system" in sample and sample["system"]:
-            sample["prompt"] = (
-                f"<|im_start|>system\n{sample['system']}<|im_end|>\n"
-                f"<|im_start|>user\n{sample['question']}<|im_end|>\n<|im_start|>assistant\n"
-            )
-        else:
-            sample[
-                "prompt"
-            ] = f"<|im_start|>user\n{sample['question']}<|im_end|>\n<|im_start|>assistant\n"
-        sample["chosen"] = f"{sample['chosen']}<|im_end|>"
-        sample["rejected"] = f"{sample['rejected']}<|im_end|>"
-        return sample
-
-    def apply_chatml(sample):  # pylint: disable=possibly-unused-variable
-        if "system" in sample and sample["system"]:
-            sample["prompt"] = (
-                f"<|im_start|>system\n{sample['system']}<|im_end|>\n"
-                f"<|im_start|>user\n{sample['prompt']}<|im_end|>\n<|im_start|>assistant\n"
-            )
-        else:
-            sample[
-                "prompt"
-            ] = f"<|im_start|>user\n{sample['prompt']}<|im_end|>\n<|im_start|>assistant\n"
-        sample["chosen"] = f"{sample['chosen']}<|im_end|>"
-        sample["rejected"] = f"{sample['rejected']}<|im_end|>"
-        return sample
-
-    def ultra_apply_chatml(sample):  # pylint: disable=possibly-unused-variable
-        if "system" in sample and sample["system"]:
-            sample["prompt"] = (
-                f"<|im_start|>system\n{sample['system']}<|im_end|>\n"
-                f"<|im_start|>user\n{sample['prompt']}<|im_end|>\n<|im_start|>assistant\n"
-            )
-        else:
-            sample[
-                "prompt"
-            ] = f"<|im_start|>user\n{sample['prompt']}<|im_end|>\n<|im_start|>assistant\n"
-        sample["chosen"] = f"{sample['chosen'][1]['content']}<|im_end|>"
-        sample["rejected"] = f"{sample['rejected'][1]['content']}<|im_end|>"
-        return sample
-
-    for i, data_set in enumerate(train_datasets):
-        _type = cfg.datasets[i]["type"]
-        ds_type_fn = locals()[_type]
-        train_datasets[i] = data_set.map(ds_type_fn)
-    train_dataset = concatenate_datasets(train_datasets)
-
-    # eval_dataset = eval_dataset.map(intel_apply_chatml)
-
-    total_num_steps = int(
-        math.ceil(len(train_dataset) * cfg.num_epochs / cfg.batch_size)
-    )
 
     return TrainDatasetMeta(
         train_dataset=train_dataset,

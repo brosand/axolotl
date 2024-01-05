@@ -21,13 +21,14 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 from transformers.trainer_utils import seed_worker
-from trl import DPOTrainer
+from transformers.integrations import MLflowCallback
 
 from axolotl.monkeypatch.relora import ReLoRACallback, ReLoRAScheduler
 from axolotl.utils.callbacks import (
     EvalFirstStepCallback,
     GPUStatsCallback,
     LossWatchDogCallback,
+    SaveAxolotlConfigtoMLflowCallback,
     SaveAxolotlConfigtoWandBCallback,
     SaveBetterTransformerModelCallback,
     bench_eval_callback_factory,
@@ -457,20 +458,11 @@ class TrainerBuilderBase(abc.ABC):
 
     _train_dataset = None
     _eval_dataset = None
-    _model_ref = None
 
     def __init__(self, cfg, model, tokenizer):
         self.cfg = cfg
         self.model = model
         self.tokenizer = tokenizer
-
-    @property
-    def model_ref(self):
-        return self._model_ref
-
-    @model_ref.setter
-    def model_ref(self, model):
-        self._model_ref = model
 
     @property
     def train_dataset(self):
@@ -542,6 +534,13 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             callbacks.append(
                 SaveAxolotlConfigtoWandBCallback(self.cfg.axolotl_config_path)
             )
+        if self.cfg.use_mlflow:
+            callbacks.append(
+                SaveAxolotlConfigtoMLflowCallback(self.cfg.axolotl_config_path)
+            )
+            callbacks.append(
+                MLflowCallback()
+            )
 
         if self.cfg.loss_watchdog_threshold is not None:
             callbacks.append(LossWatchDogCallback(self.cfg))
@@ -555,6 +554,10 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                 trainer, self.tokenizer
             )
             callbacks.append(LogPredictionCallback(self.cfg))
+        if self.cfg.use_mlflow and self.cfg.eval_table_size > 0:
+            LogPredictionCallback = log_prediction_callback_factory(
+                trainer, self.tokenizer
+            )
 
         if self.cfg.do_bench_eval:
             callbacks.append(bench_eval_callback_factory(trainer, self.tokenizer))
@@ -647,7 +650,6 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             training_arguments_kwargs["hub_model_id"] = self.cfg.hub_model_id
             training_arguments_kwargs["push_to_hub"] = True
             training_arguments_kwargs["hub_private_repo"] = True
-            training_arguments_kwargs["hub_always_push"] = True
 
             if self.cfg.hub_strategy:
                 training_arguments_kwargs["hub_strategy"] = self.cfg.hub_strategy
@@ -782,6 +784,9 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
         training_arguments_kwargs["report_to"] = report_to
         training_arguments_kwargs["run_name"] = (
             self.cfg.wandb_name if self.cfg.use_wandb else None
+        )
+        training_arguments_kwargs["run_name"] = (
+            self.cfg.mlflow_name if self.cfg.use_mlflow else None
         )
         training_arguments_kwargs["optim"] = (
             self.cfg.optimizer if self.cfg.optimizer else "adamw_hf"

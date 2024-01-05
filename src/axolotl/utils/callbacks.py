@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Dict, List
 
 import evaluate
+import mlflow
 import numpy as np
 import pandas as pd
 import torch
@@ -17,6 +18,8 @@ import wandb
 from datasets import load_dataset
 from optimum.bettertransformer import BetterTransformer
 from tqdm import tqdm
+import mlflow
+import mlflow.tracking.request_header.default_request_header_provider
 from transformers import (
     GenerationConfig,
     Trainer,
@@ -43,7 +46,9 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger("axolotl.callbacks")
 IGNORE_INDEX = -100
-
+mlflow.set_tracking_uri("https://mlflow.ramp.com")
+mlflow.tracking.request_header.default_request_header_provider._DEFAULT_HEADERS["CF-Access-Client-ID"] = os.environ["CF_Access_Client"]
+mlflow.tracking.request_header.default_request_header_provider._DEFAULT_HEADERS["CF-Access-Client-Secret"] = os.environ["CF_Access_Client_Secret"]
 
 class EvalFirstStepCallback(
     TrainerCallback
@@ -538,7 +543,14 @@ def log_prediction_callback_factory(trainer: Trainer, tokenizer):
                         )
                         row_index += 1
 
-                wandb.run.log({f"{name} - Predictions vs Ground Truth": table})  # type: ignore[attr-defined]
+                if self.cfg.use_mlflow:
+                    data = table.data
+                    columns = table.columns
+                    df = pd.DataFrame(data=data, columns=columns)
+                    # mlflow.log_table(df, f"{name} - Predictions vs Ground Truth")
+                    mlflow.log_table(df, f"pred_vs_ground_truth.json")
+                else:
+                    wandb.run.log({f"{name} - Predictions vs Ground Truth": table})  # type: ignore[attr-defined]
 
             if is_main_process():
                 log_table_from_dataloader("Eval", eval_dataloader)
@@ -574,4 +586,26 @@ class SaveAxolotlConfigtoWandBCallback(TrainerCallback):
                 )
             except (FileNotFoundError, ConnectionError) as err:
                 LOG.warning(f"Error while saving Axolotl config to WandB: {err}")
+        return control
+
+
+class SaveAxolotlConfigtoMLflowCallback(TrainerCallback):
+    """Callback to save axolotl config to MLflow"""
+
+    def __init__(self, axolotl_config_path):
+        self.axolotl_config_path = axolotl_config_path
+
+    def on_train_begin(
+        self,
+        args: AxolotlTrainingArguments,  # pylint: disable=unused-argument
+        state: TrainerState,  # pylint: disable=unused-argument
+        control: TrainerControl,
+        **kwargs,  # pylint: disable=unused-argument
+    ):
+        if is_main_process():
+            try:
+                mlflow.log_artifact(self.axolotl_config_path, "axolotl-config")
+                LOG.info("Axolotl config has been saved to MLflow as an artifact.")
+            except Exception as err:  # pylint: disable=broad-except
+                LOG.warning(f"Error while saving Axolotl config to MLflow: {err}")
         return control

@@ -13,6 +13,7 @@ datasets>=2.15.0
 flash-attn==2.3.3
 sentencepiece
 wandb
+mlflow
 einops
 xformers==0.0.22
 optimum==1.13.2
