@@ -20,13 +20,14 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
 from transformers.trainer_utils import seed_worker
-from trl import DPOTrainer
+from transformers.integrations import MLflowCallback
 
 from axolotl.monkeypatch.relora import ReLoRACallback, ReLoRAScheduler
 from axolotl.utils.callbacks import (
     EvalFirstStepCallback,
     GPUStatsCallback,
     LossWatchDogCallback,
+    SaveAxolotlConfigtoMLflowCallback,
     SaveAxolotlConfigtoWandBCallback,
     SaveBetterTransformerModelCallback,
     bench_eval_callback_factory,
@@ -421,20 +422,11 @@ class TrainerBuilderBase(abc.ABC):
 
     _train_dataset = None
     _eval_dataset = None
-    _model_ref = None
 
     def __init__(self, cfg, model, tokenizer):
         self.cfg = cfg
         self.model = model
         self.tokenizer = tokenizer
-
-    @property
-    def model_ref(self):
-        return self._model_ref
-
-    @model_ref.setter
-    def model_ref(self, model):
-        self._model_ref = model
 
     @property
     def train_dataset(self):
@@ -506,6 +498,13 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             callbacks.append(
                 SaveAxolotlConfigtoWandBCallback(self.cfg.axolotl_config_path)
             )
+        if self.cfg.use_mlflow:
+            callbacks.append(
+                SaveAxolotlConfigtoMLflowCallback(self.cfg.axolotl_config_path)
+            )
+            callbacks.append(
+                MLflowCallback()
+            )
 
         if self.cfg.loss_watchdog_threshold is not None:
             callbacks.append(LossWatchDogCallback(self.cfg))
@@ -519,6 +518,10 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                 trainer, self.tokenizer
             )
             callbacks.append(LogPredictionCallback(self.cfg))
+        if self.cfg.use_mlflow and self.cfg.eval_table_size > 0:
+            LogPredictionCallback = log_prediction_callback_factory(
+                trainer, self.tokenizer
+            )
 
         if self.cfg.do_bench_eval:
             callbacks.append(bench_eval_callback_factory(trainer, self.tokenizer))
@@ -611,7 +614,6 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             training_arguments_kwargs["hub_model_id"] = self.cfg.hub_model_id
             training_arguments_kwargs["push_to_hub"] = True
             training_arguments_kwargs["hub_private_repo"] = True
-            training_arguments_kwargs["hub_always_push"] = True
 
             if self.cfg.hub_strategy:
                 training_arguments_kwargs["hub_strategy"] = self.cfg.hub_strategy
@@ -733,8 +735,14 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
         )
         training_arguments_kwargs["group_by_length"] = self.cfg.group_by_length
         training_arguments_kwargs["report_to"] = "wandb" if self.cfg.use_wandb else None
+        training_arguments_kwargs["report_to"] = (
+            "mlflow" if self.cfg.use_mlflow else None
+        )
         training_arguments_kwargs["run_name"] = (
             self.cfg.wandb_name if self.cfg.use_wandb else None
+        )
+        training_arguments_kwargs["run_name"] = (
+            self.cfg.mlflow_name if self.cfg.use_mlflow else None
         )
         training_arguments_kwargs["optim"] = (
             self.cfg.optimizer if self.cfg.optimizer else "adamw_hf"
@@ -838,96 +846,3 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             return_tensors="pt",
             **kwargs,
         )
-
-
-class HFDPOTrainerBuilder(TrainerBuilderBase):
-    """
-    Trainer factory class for DPO Trainer
-    """
-
-    def get_callbacks(self):
-        callbacks = []
-        return callbacks
-
-    def get_post_trainer_create_callbacks(self, trainer):
-        callbacks = []
-        return callbacks
-
-    def build_training_arguments(self, total_num_steps):
-        training_args_kwargs = {}
-        for arg in [
-            "adam_beta1",
-            "adam_beta2",
-            "adam_epsilon",
-            "dataloader_num_workers",
-            "dataloader_pin_memory",
-        ]:
-            if hasattr(self.cfg, arg) and getattr(self.cfg, arg) is not None:
-                training_args_kwargs[arg] = getattr(self.cfg, arg)
-        training_args = TrainingArguments(
-            per_device_train_batch_size=self.cfg.micro_batch_size,
-            max_steps=total_num_steps,
-            remove_unused_columns=False,
-            gradient_accumulation_steps=self.cfg.gradient_accumulation_steps,
-            learning_rate=self.cfg.learning_rate,
-            evaluation_strategy="no",
-            # eval_steps=self.cfg.eval_steps,
-            save_strategy="steps",
-            save_steps=self.cfg.save_steps,
-            output_dir=self.cfg.output_dir,
-            warmup_steps=self.cfg.warmup_steps,
-            bf16=True,
-            gradient_checkpointing=self.cfg.gradient_checkpointing,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
-            logging_first_step=True,
-            logging_steps=1,
-            optim=self.cfg.optimizer,
-            save_total_limit=self.cfg.save_total_limit or 5,
-            **training_args_kwargs,
-        )
-
-        return training_args
-
-    def build(self, total_num_steps):
-        training_args = self.build_training_arguments(total_num_steps)
-        dpo_trainer_kwargs = {}
-        if self.cfg.rl == "ipo":
-            dpo_trainer_kwargs["loss_type"] = "ipo"
-            if self.cfg.dpo_label_smoothing:
-                dpo_trainer_kwargs["label_smoothing"] = self.cfg.dpo_label_smoothing
-
-        dpo_trainer = DPOTrainer(
-            self.model,
-            self.model_ref,
-            args=training_args,
-            beta=self.cfg.dpo_beta or 0.1,
-            train_dataset=self.train_dataset,
-            # eval_dataset=self.eval_dataset,
-            eval_dataset=None,
-            tokenizer=self.tokenizer,
-            max_length=self.cfg.sequence_len,
-            max_target_length=None,
-            max_prompt_length=self.cfg.sequence_len,
-            generate_during_eval=True,
-            **dpo_trainer_kwargs,
-        )
-
-        return dpo_trainer
-
-
-class HFPPOTrainerBuilder(TrainerBuilderBase):
-    """
-    HF Factory class for PPO Trainer
-    """
-
-    def get_callbacks(self):
-        callbacks = []
-        return callbacks
-
-    def get_post_trainer_create_callbacks(self, trainer):
-        callbacks = []
-        return callbacks
-
-    def build(self, total_num_steps):
-        # build PPOConfig
-        pass

@@ -428,6 +428,8 @@ def validate_config(cfg):
         LOG.warning(
             "wandb_run_id sets the ID of the run. If you would like to set the name, please use wandb_name instead."
         )
+    if cfg.mlflow_run_id and not cfg.mlflow_name:
+        cfg.mlflow_name = cfg.mlflow_run_id
 
     if cfg.noisy_embedding_alpha is not None:
         # Deprecated, use neftune_noise_alpha
@@ -455,11 +457,6 @@ def validate_config(cfg):
     ):
         raise ValueError(
             "lora_modules_to_save not properly set yet adding new tokens. Please add `embed_tokens` and `lm_head` to `lora_modules_to_save`."
-        )
-
-    if cfg.max_memory is not None and cfg.gpu_memory_limit is not None:
-        raise ValueError(
-            "max_memory and gpu_memory_limit are mutually exclusive and cannot be used together."
         )
 
     # TODO

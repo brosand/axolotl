@@ -8,6 +8,7 @@ load_in_8bit: false
 load_in_4bit: false
 strict: false
 
+mlflow_tracking_uri: "mlflow.ramp.com"
 datasets:
   - path: garage-bAInd/Open-Platypus
     type: alpaca
@@ -17,7 +18,7 @@ val_set_size: 0.05
 output_dir: ./phi-sft-out
 
 sequence_len: 2048
-sample_packing: true
+sample_packing: false
 pad_to_sequence_len:
 
 adapter:
@@ -46,9 +47,9 @@ learning_rate: 0.000003
 
 train_on_inputs: false
 group_by_length: true
-bf16: true
+bf16: false
 fp16: false
-tf32: true
+tf32: false
 
 gradient_checkpointing:
 early_stopping_patience:
